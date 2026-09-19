@@ -1,4 +1,4 @@
-package main
+package httpapi
 
 import (
 	"bytes"
@@ -11,10 +11,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/veerbal1/event-flow/internal/db"
+	"github.com/veerbal1/event-flow/internal/order"
 )
 
 func TestCreateOrder(t *testing.T) {
-	pool, mux := testServer(t)
+	pool, handler := testServer(t)
+	store := order.NewStore()
 
 	t.Run("valid order", func(t *testing.T) {
 		body := `{"customer_id":"c1","items":[{"sku":"ABC","qty":2,"price_cents":1999}]}`
@@ -22,7 +24,7 @@ func TestCreateOrder(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		mux.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
@@ -39,22 +41,19 @@ func TestCreateOrder(t *testing.T) {
 		if resp.TotalCents != 3998 {
 			t.Errorf("response total_cents = %d, want 3998", resp.TotalCents)
 		}
-		if resp.Status != "PLACED" {
-			t.Errorf("response status = %q, want PLACED", resp.Status)
+		if resp.Status != order.StatusPlaced {
+			t.Errorf("response status = %q, want %q", resp.Status, order.StatusPlaced)
 		}
 
-		var totalCents int64
-		var status string
-		if err := pool.QueryRow(context.Background(),
-			`SELECT total_cents, status FROM orders WHERE id = $1`, resp.ID,
-		).Scan(&totalCents, &status); err != nil {
-			t.Fatalf("query order %s: %v", resp.ID, err)
+		stored, err := store.Get(context.Background(), pool, resp.ID)
+		if err != nil {
+			t.Fatalf("get order %s: %v", resp.ID, err)
 		}
-		if totalCents != 3998 {
-			t.Errorf("stored total_cents = %d, want 3998", totalCents)
+		if stored.TotalCents != 3998 {
+			t.Errorf("stored total_cents = %d, want 3998", stored.TotalCents)
 		}
-		if status != "PLACED" {
-			t.Errorf("stored status = %q, want PLACED", status)
+		if stored.Status != order.StatusPlaced {
+			t.Errorf("stored status = %q, want %q", stored.Status, order.StatusPlaced)
 		}
 	})
 
@@ -64,7 +63,7 @@ func TestCreateOrder(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 
-		mux.ServeHTTP(rec, req)
+		handler.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -72,7 +71,7 @@ func TestCreateOrder(t *testing.T) {
 	})
 }
 
-func testServer(t *testing.T) (*pgxpool.Pool, *http.ServeMux) {
+func testServer(t *testing.T) (*pgxpool.Pool, http.Handler) {
 	t.Helper()
 
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -86,5 +85,5 @@ func testServer(t *testing.T) (*pgxpool.Pool, *http.ServeMux) {
 	}
 	t.Cleanup(pool.Close)
 
-	return pool, newMux(&handlers{pool: pool})
+	return pool, NewServer(pool, order.NewStore()).Routes()
 }

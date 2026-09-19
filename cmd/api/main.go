@@ -10,38 +10,36 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/veerbal1/event-flow/internal/config"
 	"github.com/veerbal1/event-flow/internal/db"
+	"github.com/veerbal1/event-flow/internal/httpapi"
+	"github.com/veerbal1/event-flow/internal/order"
 )
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		slog.Error("DATABASE_URL is required")
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("load config", "error", err)
 		os.Exit(1)
-	}
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := db.Open(ctx, databaseURL)
+	pool, err := db.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("open database", "error", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
 
-	mux := newMux(&handlers{pool: pool})
+	api := httpapi.NewServer(pool, order.NewStore())
 
 	server := &http.Server{
-		Addr:              ":" + port,
-		Handler:           mux,
+		Addr:              ":" + cfg.Port,
+		Handler:           api.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -68,11 +66,4 @@ func main() {
 			slog.Error("server shutdown", "error", err)
 		}
 	}
-}
-
-func newMux(h *handlers) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", h.healthz)
-	mux.HandleFunc("POST /orders", h.createOrder)
-	return mux
 }
