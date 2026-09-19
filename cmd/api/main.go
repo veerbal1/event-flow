@@ -37,17 +37,18 @@ func main() {
 	}
 	defer pool.Close()
 
+	h := &handlers{pool: pool}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	mux.HandleFunc("POST /orders", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "not implemented", http.StatusNotImplemented)
-	})
+	mux.HandleFunc("GET /healthz", h.healthz)
+	mux.HandleFunc("POST /orders", h.createOrder)
 
 	server := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
 	}
 
 	serverErr := make(chan error, 1)
