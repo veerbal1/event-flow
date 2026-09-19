@@ -9,6 +9,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/veerbal1/event-flow/internal/db"
 	"github.com/veerbal1/event-flow/internal/order"
@@ -20,11 +21,7 @@ func TestCreateOrder(t *testing.T) {
 
 	t.Run("valid order", func(t *testing.T) {
 		body := `{"customer_id":"c1","items":[{"sku":"ABC","qty":2,"price_cents":1999}]}`
-		req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-
-		handler.ServeHTTP(rec, req)
+		rec := postOrder(handler, body, uuid.NewString())
 
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
@@ -58,17 +55,82 @@ func TestCreateOrder(t *testing.T) {
 	})
 
 	t.Run("empty items", func(t *testing.T) {
-		body := `{"customer_id":"c1","items":[]}`
-		req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(body))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-
-		handler.ServeHTTP(rec, req)
+		rec := postOrder(handler, `{"customer_id":"c1","items":[]}`, uuid.NewString())
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 		}
 	})
+
+	t.Run("missing idempotency key", func(t *testing.T) {
+		body := `{"customer_id":"c1","items":[{"sku":"ABC","qty":1,"price_cents":100}]}`
+		rec := postOrder(handler, body, "")
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+	})
+
+	t.Run("same key twice", func(t *testing.T) {
+		body := `{"customer_id":"c2","items":[{"sku":"XYZ","qty":1,"price_cents":500}]}`
+		key := uuid.NewString()
+
+		first := postOrder(handler, body, key)
+		if first.Code != http.StatusCreated {
+			t.Fatalf("first status = %d, want %d; body: %s", first.Code, http.StatusCreated, first.Body.String())
+		}
+		if got := first.Header().Get("Idempotent-Replayed"); got != "" {
+			t.Errorf("first Idempotent-Replayed = %q, want empty", got)
+		}
+
+		second := postOrder(handler, body, key)
+		if second.Code != http.StatusOK {
+			t.Fatalf("second status = %d, want %d; body: %s", second.Code, http.StatusOK, second.Body.String())
+		}
+		if got := second.Header().Get("Idempotent-Replayed"); got != "true" {
+			t.Errorf("second Idempotent-Replayed = %q, want true", got)
+		}
+
+		firstID := decodeID(t, first)
+		secondID := decodeID(t, second)
+		if firstID != secondID {
+			t.Errorf("ids differ: first = %s, second = %s", firstID, secondID)
+		}
+
+		var count int
+		if err := pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key,
+		).Scan(&count); err != nil {
+			t.Fatalf("count orders: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("rows with key = %d, want 1", count)
+		}
+	})
+}
+
+func postOrder(handler http.Handler, body, key string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func decodeID(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp.ID
 }
 
 func testServer(t *testing.T) (*pgxpool.Pool, http.Handler) {

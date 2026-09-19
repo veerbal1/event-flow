@@ -1,6 +1,7 @@
 package order
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 
 const StatusPlaced = "PLACED"
 
+var ErrNotFound = errors.New("order not found")
+
 type Item struct {
 	SKU        string `json:"sku"`
 	Qty        int64  `json:"qty"`
@@ -16,12 +19,13 @@ type Item struct {
 }
 
 type Order struct {
-	ID         string    `json:"id"`
-	CustomerID string    `json:"customer_id"`
-	Items      []Item    `json:"items"`
-	TotalCents int64     `json:"total_cents"`
-	Status     string    `json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	CustomerID     string    `json:"customer_id"`
+	Items          []Item    `json:"items"`
+	TotalCents     int64     `json:"total_cents"`
+	Status         string    `json:"status"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type ValidationError struct {
@@ -32,12 +36,15 @@ func (e ValidationError) Error() string {
 	return e.Message
 }
 
-func New(customerID string, items []Item) (Order, error) {
+func New(customerID string, items []Item, idempotencyKey string) (Order, error) {
 	if customerID == "" {
 		return Order{}, ValidationError{Message: "customer_id is required"}
 	}
 	if len(items) == 0 {
 		return Order{}, ValidationError{Message: "at least one item is required"}
+	}
+	if idempotencyKey == "" {
+		return Order{}, ValidationError{Message: "Idempotency-Key header is required"}
 	}
 
 	var totalCents int64
@@ -57,10 +64,11 @@ func New(customerID string, items []Item) (Order, error) {
 	}
 
 	return Order{
-		ID:         id.String(),
-		CustomerID: customerID,
-		Items:      items,
-		TotalCents: totalCents,
-		Status:     StatusPlaced,
+		ID:             id.String(),
+		CustomerID:     customerID,
+		Items:          items,
+		TotalCents:     totalCents,
+		Status:         StatusPlaced,
+		IdempotencyKey: idempotencyKey,
 	}, nil
 }

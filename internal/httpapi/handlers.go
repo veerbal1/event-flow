@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -48,13 +49,32 @@ type createOrderResponse struct {
 }
 
 func (s *Server) createOrder(w http.ResponseWriter, r *http.Request) {
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+
+	if idempotencyKey != "" {
+		existing, err := s.store.GetByIdempotencyKey(r.Context(), s.pool, idempotencyKey)
+		switch {
+		case err == nil:
+			w.Header().Set("Idempotent-Replayed", "true")
+			writeJSON(w, http.StatusOK, createOrderResponse{
+				ID:         existing.ID,
+				Status:     existing.Status,
+				TotalCents: existing.TotalCents,
+			})
+			return
+		case !errors.Is(err, order.ErrNotFound):
+			respondError(w, err)
+			return
+		}
+	}
+
 	var req createOrderRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	o, err := order.New(req.CustomerID, req.Items)
+	o, err := order.New(req.CustomerID, req.Items, idempotencyKey)
 	if err != nil {
 		respondError(w, err)
 		return
