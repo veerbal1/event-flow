@@ -1,6 +1,7 @@
 package order
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,8 +51,13 @@ func New(customerID string, items []Item) (Order, error) {
 		totalCents += item.Qty * item.PriceCents
 	}
 
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Order{}, fmt.Errorf("generate id: %w", err)
+	}
+
 	return Order{
-		ID:         uuid.NewString(),
+		ID:         id.String(),
 		CustomerID: customerID,
 		Items:      items,
 		TotalCents: totalCents,
