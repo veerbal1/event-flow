@@ -37,11 +37,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	h := &handlers{pool: pool}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", h.healthz)
-	mux.HandleFunc("POST /orders", h.createOrder)
+	mux := newMux(&handlers{pool: pool})
 
 	server := &http.Server{
 		Addr:              ":" + port,
@@ -72,4 +68,11 @@ func main() {
 			slog.Error("server shutdown", "error", err)
 		}
 	}
+}
+
+func newMux(h *handlers) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", h.healthz)
+	mux.HandleFunc("POST /orders", h.createOrder)
+	return mux
 }
