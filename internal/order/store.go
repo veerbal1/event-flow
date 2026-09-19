@@ -7,8 +7,11 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/veerbal1/event-flow/internal/db"
 )
+
+const idempotencyKeyIndex = "orders_idempotency_key_key"
 
 type Store struct{}
 
@@ -27,6 +30,10 @@ func (s *Store) Create(ctx context.Context, q db.Querier, o Order) error {
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
 		o.ID, o.CustomerID, items, o.TotalCents, o.Status, o.IdempotencyKey,
 	); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == idempotencyKeyIndex {
+			return fmt.Errorf("insert order: %w", ErrDuplicateKey)
+		}
 		return fmt.Errorf("insert order: %w", err)
 	}
 

@@ -10,7 +10,10 @@ import (
 
 const StatusPlaced = "PLACED"
 
-var ErrNotFound = errors.New("order not found")
+var (
+	ErrNotFound     = errors.New("order not found")
+	ErrDuplicateKey = errors.New("duplicate idempotency key")
+)
 
 type Item struct {
 	SKU        string `json:"sku"`

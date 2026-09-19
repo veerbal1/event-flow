@@ -55,12 +55,7 @@ func (s *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 		existing, err := s.store.GetByIdempotencyKey(r.Context(), s.pool, idempotencyKey)
 		switch {
 		case err == nil:
-			w.Header().Set("Idempotent-Replayed", "true")
-			writeJSON(w, http.StatusOK, createOrderResponse{
-				ID:         existing.ID,
-				Status:     existing.Status,
-				TotalCents: existing.TotalCents,
-			})
+			writeReplay(w, existing)
 			return
 		case !errors.Is(err, order.ErrNotFound):
 			respondError(w, err)
@@ -81,11 +76,29 @@ func (s *Server) createOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.Create(r.Context(), s.pool, o); err != nil {
+		if errors.Is(err, order.ErrDuplicateKey) {
+			existing, err := s.store.GetByIdempotencyKey(r.Context(), s.pool, idempotencyKey)
+			if err != nil {
+				respondError(w, err)
+				return
+			}
+			writeReplay(w, existing)
+			return
+		}
 		respondError(w, err)
 		return
 	}
 
 	writeJSON(w, http.StatusCreated, createOrderResponse{
+		ID:         o.ID,
+		Status:     o.Status,
+		TotalCents: o.TotalCents,
+	})
+}
+
+func writeReplay(w http.ResponseWriter, o order.Order) {
+	w.Header().Set("Idempotent-Replayed", "true")
+	writeJSON(w, http.StatusOK, createOrderResponse{
 		ID:         o.ID,
 		Status:     o.Status,
 		TotalCents: o.TotalCents,

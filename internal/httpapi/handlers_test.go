@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -107,6 +108,73 @@ func TestCreateOrder(t *testing.T) {
 			t.Errorf("rows with key = %d, want 1", count)
 		}
 	})
+}
+
+func TestConcurrentCreateOrder(t *testing.T) {
+	pool, handler := testServer(t)
+
+	const workers = 50
+
+	key := uuid.NewString()
+	body := `{"customer_id":"c9","items":[{"sku":"ABC","qty":1,"price_cents":100}]}`
+
+	var (
+		wg      sync.WaitGroup
+		start   = make(chan struct{})
+		codesMu sync.Mutex
+		codes   = make([]int, 0, workers)
+	)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+
+			req := httptest.NewRequest(http.MethodPost, "/orders", bytes.NewBufferString(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", key)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			codesMu.Lock()
+			codes = append(codes, rec.Code)
+			codesMu.Unlock()
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	var created, replayed int
+	for _, code := range codes {
+		switch code {
+		case http.StatusCreated:
+			created++
+		case http.StatusOK:
+			replayed++
+		default:
+			t.Errorf("unexpected status %d", code)
+		}
+	}
+
+	if created != 1 {
+		t.Errorf("201 responses = %d, want exactly 1", created)
+	}
+	if replayed != workers-1 {
+		t.Errorf("200 responses = %d, want %d", replayed, workers-1)
+	}
+
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM orders WHERE idempotency_key = $1`, key,
+	).Scan(&count); err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("rows with key = %d, want exactly 1", count)
+	}
 }
 
 func postOrder(handler http.Handler, body, key string) *httptest.ResponseRecorder {
